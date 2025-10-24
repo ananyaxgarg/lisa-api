@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+librosa
+soundfile
+numpy
+scipy
+tensorflow==2.15.*

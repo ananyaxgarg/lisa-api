@@ -8,8 +8,9 @@ import librosa
 from scipy.signal import butter, filtfilt
 from fastapi import FastAPI, File, UploadFile, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+# ---- model / feature config -------------------------------------------------
 try:
     import keras
     load_model = keras.saving.load_model
@@ -32,6 +33,7 @@ HOP = 256
 
 app = FastAPI(title="LISA API", version="1.0.0")
 
+# ---- CORS -------------------------------------------------------------------
 allowed_origins = [
     "https://lisa-yb7v.onrender.com",
     "http://localhost:3000",
@@ -49,7 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# ---- DSP helpers -------------------------------------------------------------
 def bandpass_20_400(y: np.ndarray, sr: int = SR, lo: float = 20.0, hi: float = 400.0, order: int = 4) -> np.ndarray:
     ny = 0.5 * sr
     b, a = butter(order, [lo / ny, hi / ny], btype="band")
@@ -57,7 +59,6 @@ def bandpass_20_400(y: np.ndarray, sr: int = SR, lo: float = 20.0, hi: float = 4
         return filtfilt(b, a, y).astype(np.float32)
     except Exception:
         return y.astype(np.float32)
-
 
 def rms_normalize(y: np.ndarray, target: float = -20.0) -> np.ndarray:
     rms = np.sqrt(np.mean(y ** 2) + 1e-12)
@@ -67,12 +68,10 @@ def rms_normalize(y: np.ndarray, target: float = -20.0) -> np.ndarray:
     y = np.clip(y * gain, -1.0, 1.0)
     return y.astype(np.float32)
 
-
 def load_fixed(y: np.ndarray) -> np.ndarray:
     if len(y) >= FIX_SAMPLES:
         return y[:FIX_SAMPLES]
     return np.pad(y, (0, FIX_SAMPLES - len(y)))
-
 
 def extract_mel_v1(file_path: str) -> np.ndarray:
     y, _ = librosa.load(file_path, sr=SR)
@@ -80,7 +79,6 @@ def extract_mel_v1(file_path: str) -> np.ndarray:
     mel = librosa.feature.melspectrogram(y=y, sr=SR, n_mels=N_MELS, n_fft=N_FFT, hop_length=HOP, power=2.0)
     mel_db = librosa.power_to_db(mel, ref=np.max)
     return mel_db.astype(np.float32)
-
 
 def extract_mel_v2(file_path: str) -> np.ndarray:
     y, _ = librosa.load(file_path, sr=SR)
@@ -92,11 +90,9 @@ def extract_mel_v2(file_path: str) -> np.ndarray:
     mel_db = librosa.power_to_db(mel, ref=np.max)
     return mel_db.astype(np.float32)
 
-
 def to4_dup(mel_2d: np.ndarray, mu_vec: np.ndarray, sg_vec: np.ndarray) -> np.ndarray:
     x4 = np.repeat(mel_2d[..., np.newaxis], 4, axis=-1)
     return (x4 - mu_vec.reshape(1, 1, 4)) / (sg_vec.reshape(1, 1, 4) + 1e-6)
-
 
 def to4_single(mel_2d: np.ndarray, mu_vec: np.ndarray, sg_vec: np.ndarray) -> np.ndarray:
     F, T = mel_2d.shape
@@ -104,19 +100,16 @@ def to4_single(mel_2d: np.ndarray, mu_vec: np.ndarray, sg_vec: np.ndarray) -> np
     x4[..., 0] = mel_2d
     return (x4 - mu_vec.reshape(1, 1, 4)) / (sg_vec.reshape(1, 1, 4) + 1e-6)
 
-
 def predict_avg(model, x_dup: np.ndarray, x_single: np.ndarray) -> float:
     p1 = float(model.predict(x_dup, verbose=0)[0][0])
     p2 = float(model.predict(x_single, verbose=0)[0][0])
     return 0.5 * (p1 + p2)
-
 
 def _load_threshold(thr_path: str, default_val: float) -> float:
     try:
         return float(np.load(thr_path)[0])
     except Exception:
         return default_val
-
 
 (mu1, sg1) = np.load(MU_SIGMA_V1_PATH, allow_pickle=True)
 (mu2, sg2) = np.load(MU_SIGMA_V2_PATH, allow_pickle=True)
@@ -127,7 +120,6 @@ health_model = load_model(MODEL_HEART_HEALTH, compile=False, safe_mode=False)
 
 T_MURMUR = _load_threshold(MODEL_MURMUR.replace(".keras", "_thr.npy"), 0.5)
 T_HEALTH = _load_threshold(MODEL_HEART_HEALTH.replace(".keras", "_thr.npy"), 0.064)
-
 
 def run_inference_on_file(path: str) -> Dict[str, Any]:
     mel1 = extract_mel_v1(path)
@@ -150,11 +142,10 @@ def run_inference_on_file(path: str) -> Dict[str, Any]:
         "thr_heart": round(T_HEALTH, 3),
     }
 
-
+# ---- endpoints --------------------------------------------------------------
 @app.get("/")
 def root():
     return {"ok": True, "message": "LISA API is up", "endpoints": ["/health", "/recording"]}
-
 
 @app.get("/health")
 def health():
@@ -166,19 +157,32 @@ def health():
         },
     }
 
+# allow preflight explicitly (some proxies are picky)
+@app.options("/recording")
+def options_recording():
+    return Response(status_code=204)
 
+# accept 'file' (preferred) or 'audio' (fallback) for robustness
 @app.post("/recording")
-async def analyse_recording(file: UploadFile = File(...), origin: Optional[str] = Header(default=None)):
-    suffix = os.path.splitext(file.filename or "")[-1].lower()
+async def analyse_recording(
+    file: Optional[UploadFile] = File(default=None),
+    audio: Optional[UploadFile] = File(default=None),
+    origin: Optional[str] = Header(default=None),
+):
+    upload: UploadFile = file or audio
+    if upload is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "file required (field name 'file' or 'audio')"})
+
+    suffix = os.path.splitext(upload.filename or "")[-1].lower()
     if suffix not in [".wav", ".mp3", ".webm", ".m4a", ".ogg", ".flac", ".aac"]:
         suffix = ".wav"
 
     tmp_path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4().hex}{suffix}")
     try:
         with open(tmp_path, "wb") as f:
-            f.write(await file.read())
+            f.write(await upload.read())
         result = run_inference_on_file(tmp_path)
-        return JSONResponse({"ok": True, "filename": file.filename, "result": result})
+        return JSONResponse({"ok": True, "filename": upload.filename, "result": result})
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     finally:

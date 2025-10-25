@@ -1,8 +1,13 @@
-fastapi
-uvicorn[standard]
-python-multipart
-librosa
-soundfile
-numpy
-scipy
-tensorflow==2.15.*
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# Audio/DSP stack pinned to pre-NumPy-2
+numpy==1.26.4
+scipy==1.11.4
+soundfile==0.12.1
+librosa==0.10.1
+
+# TensorFlow/Keras stack that matches your Colab save format
+tensorflow==2.15.0
+tensorflow-io-gcs-filesystem==0.34.0

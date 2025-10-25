@@ -10,12 +10,11 @@ from fastapi import FastAPI, File, UploadFile, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# Prefer Keras 3 loader (your models were saved with keras.src.*)
 try:
     import keras
     load_model = keras.saving.load_model
-except Exception:  # Fallback if needed
-    from tensorflow.keras.models import load_model  # type: ignore
+except Exception:
+    from tensorflow.keras.models import load_model  # fallback
 
 ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "./PILOT")
 
@@ -169,10 +168,7 @@ def health():
 
 
 @app.post("/recording")
-async def analyse_recording(
-    file: UploadFile = File(...),
-    origin: Optional[str] = Header(default=None),
-):
+async def analyse_recording(file: UploadFile = File(...), origin: Optional[str] = Header(default=None)):
     suffix = os.path.splitext(file.filename or "")[-1].lower()
     if suffix not in [".wav", ".mp3", ".webm", ".m4a", ".ogg", ".flac", ".aac"]:
         suffix = ".wav"
@@ -181,7 +177,6 @@ async def analyse_recording(
     try:
         with open(tmp_path, "wb") as f:
             f.write(await file.read())
-
         result = run_inference_on_file(tmp_path)
         return JSONResponse({"ok": True, "filename": file.filename, "result": result})
     except Exception as e:

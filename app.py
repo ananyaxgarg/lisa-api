@@ -36,6 +36,7 @@ app = FastAPI(title="LISA API", version="1.0.0")
 # ---- CORS -------------------------------------------------------------------
 allowed_origins = [
     "https://lisa-yb7v.onrender.com",
+    "https://lisa-server-cyix.onrender.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
